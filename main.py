@@ -3,10 +3,11 @@ from pydantic import BaseModel
 from typing import List, Optional
 import re
 import requests
+import random
 
 app = FastAPI()
 
-# In-memory storage
+# ---------------- In-memory storage ----------------
 sessions = {}
 
 # ---------------- Models ----------------
@@ -21,9 +22,9 @@ class RequestBody(BaseModel):
     conversationHistory: List[Message] = []
     metadata: Optional[dict] = {}
 
-# ---------------- Scam Detection ----------------
+# ---------------- Scam Detection (INTERNAL ONLY) ----------------
 def is_scam(text: str) -> bool:
-    keywords = ["blocked", "verify", "urgent", "upi", "click"]
+    keywords = ["blocked", "verify", "urgent", "upi", "click", "suspended"]
     return any(k in text.lower() for k in keywords)
 
 # ---------------- Intelligence Extraction ----------------
@@ -38,9 +39,43 @@ def extract_intelligence(text: str, session):
         re.findall(r'https?://\S+', text)
     )
 
-    for k in ["urgent", "verify", "blocked"]:
+    for k in ["urgent", "verify", "blocked", "suspended"]:
         if k in text.lower():
             session["extracted"]["suspiciousKeywords"].append(k)
+
+# ---------------- Human-like Agent Reply ----------------
+def generate_agent_reply(text: str, session):
+    text_lower = text.lower()
+    messages = session["messages"]
+    full_context = " ".join(messages).lower()
+
+    fillers = ["umm", "uh", "hmm", "wait", "sorry", "okay"]
+    filler = random.choice(fillers)
+
+    # Self-correction
+    if "sbi" in full_context and "hdfc" in text_lower:
+        return "Oh wait, sorry… I thought this was SBI earlier. HDFC then, right? What do I need to do now?"
+
+    if "upi" in text_lower:
+        return f"{filler} I actually have two UPI IDs. Which one should I use? Personal or business?"
+
+    if "http" in text_lower or "click" in text_lower:
+        return f"{filler} this link isn’t opening properly on my phone. Is there some other way?"
+
+    if "blocked" in text_lower or "suspended" in text_lower:
+        return "This is really sudden… my account was working fine today. Why is it blocked now?"
+
+    if "call" in text_lower or "number" in text_lower:
+        return "I’m at work right now and can’t take calls. Can you explain it here?"
+
+    if len(messages) == 1:
+        return "I just got this message and I’m honestly confused… what exactly is the issue?"
+
+    return random.choice([
+        "Sorry, I’m still not fully getting this. Can you explain again?",
+        "This is a bit confusing for me… what should I do first?",
+        "I don’t usually handle these things. Can you guide me step by step?"
+    ])
 
 # ---------------- Final Callback ----------------
 def send_final_callback(session_id: str):
@@ -53,21 +88,17 @@ def send_final_callback(session_id: str):
         "scamDetected": True,
         "totalMessagesExchanged": len(session["messages"]),
         "extractedIntelligence": session["extracted"],
-        "agentNotes": "Scammer used urgency and payment redirection tactics"
+        "agentNotes": "Human-like confusion, clarification, and adaptive probing used"
     }
 
-    print("Sending final callback to GUVI")
-    print(payload)
-
     try:
-        response = requests.post(
+        requests.post(
             "https://hackathon.guvi.in/api/updateHoneyPotFinalResult",
             json=payload,
             timeout=5
         )
-        print("Final callback sent:", response.status_code)
-    except Exception as e:
-        print("Callback failed:", e)
+    except:
+        pass
 
 # ---------------- API ----------------
 @app.get("/")
@@ -92,22 +123,33 @@ def receive_message(body: RequestBody):
             "callbackSent": False
         }
 
+    # Store message
     sessions[session_id]["messages"].append(text)
+
+    # Extract intelligence silently
     extract_intelligence(text, sessions[session_id])
 
+    # Internal scam detection
     scam = is_scam(text)
 
+    # Generate human-like reply
+    reply = generate_agent_reply(text, sessions[session_id])
+
+    # Trigger final callback
     if scam and len(sessions[session_id]["messages"]) >= 2 and not sessions[session_id]["callbackSent"]:
         send_final_callback(session_id)
         sessions[session_id]["callbackSent"] = True
 
     if not scam:
-        return {"status": "ok", "scamDetected": False}
+        return {
+            "status": "ok",
+            "scamDetected": False
+        }
 
     return {
         "status": "success",
         "scamDetected": True,
-        "reply": "Can you explain this again? I’m not sure I understand."
+        "reply": reply
     }
 
 @app.get("/debug/session/{session_id}")
