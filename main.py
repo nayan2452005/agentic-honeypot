@@ -7,23 +7,30 @@ import random
 
 app = FastAPI()
 
-# ---------------- API KEY ----------------
-API_KEY = "GUVI_SECRET_KEY_2005"
+# ---------------- API KEY (OPTIONAL) ----------------
+API_KEY = "GUVI_SECRET_KEY_123"
 
 # ---------------- In-memory storage ----------------
 sessions = {}
 
-# ---------------- Models ----------------
+# ---------------- Models (GUVI FLEXIBLE) ----------------
 class Message(BaseModel):
-    sender: str
+    sender: Optional[str] = ""
     text: str
-    timestamp: str
+    timestamp: Optional[str] = ""
+
+    class Config:
+        extra = "allow"
+
 
 class RequestBody(BaseModel):
     sessionId: str
     message: Message
-    conversationHistory: List[Message] = []
+    conversationHistory: Optional[List[Message]] = []
     metadata: Optional[dict] = {}
+
+    class Config:
+        extra = "allow"
 
 # ---------------- Scam Detection (INTERNAL ONLY) ----------------
 def is_scam(text: str) -> bool:
@@ -59,10 +66,10 @@ def generate_agent_reply(text: str, session):
         return "Oh wait, sorry… I thought this was SBI earlier. HDFC then, right? What do I need to do now?"
 
     if "upi" in text_lower:
-        return f"{filler} I actually have two UPI IDs. Which one should I use? Personal or business?"
+        return f"{filler} I actually have two UPI IDs. Which one should I use?"
 
     if "http" in text_lower or "click" in text_lower:
-        return f"{filler} this link isn’t opening properly on my phone. Is there some other way?"
+        return f"{filler} this link isn’t opening properly on my phone. Is there another way?"
 
     if "blocked" in text_lower or "suspended" in text_lower:
         return "This is really sudden… my account was working fine today. Why is it blocked now?"
@@ -110,10 +117,10 @@ def home():
 @app.post("/v1/message")
 def receive_message(
     body: RequestBody,
-    x_api_key: str = Header(None)
+    x_api_key: Optional[str] = Header(None)
 ):
-    # API key validation
-    if x_api_key != API_KEY:
+    # Optional API key check (GUVI-safe)
+    if x_api_key is not None and x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
     session_id = body.sessionId
@@ -135,13 +142,13 @@ def receive_message(
     # Store message
     sessions[session_id]["messages"].append(text)
 
-    # Extract intelligence silently
+    # Extract intelligence
     extract_intelligence(text, sessions[session_id])
 
     # Internal scam detection
     scam = is_scam(text)
 
-    # Generate human-like reply
+    # Generate reply
     reply = generate_agent_reply(text, sessions[session_id])
 
     # Trigger final callback
