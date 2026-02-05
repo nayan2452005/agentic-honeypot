@@ -1,24 +1,33 @@
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict
 import re
-import requests
 import random
+import requests
 
-# ✅ Swagger UI enabled, but "Try it out" DISABLED
+# ======================================================
+# APP CONFIG (Swagger enabled, Try-it-out disabled)
+# ======================================================
 app = FastAPI(
     swagger_ui_parameters={
         "tryItOutEnabled": False
     }
 )
 
-# ---------------- OPTIONAL API KEY ----------------
+# ======================================================
+# CONFIG
+# ======================================================
 API_KEY = "GUVI_SECRET_KEY_123"
+FINAL_CALLBACK_URL = "https://hackathon.guvi.in/api/updateHoneyPotFinalResult"
 
-# ---------------- In-memory storage ----------------
-sessions = {}
+# ======================================================
+# IN-MEMORY STORAGE
+# ======================================================
+sessions: Dict[str, dict] = {}
 
-# ---------------- Models (GUVI FLEXIBLE) ----------------
+# ======================================================
+# MODELS (GUVI FLEXIBLE + SAFE)
+# ======================================================
 class Message(BaseModel):
     sender: Optional[str] = ""
     text: str
@@ -37,13 +46,25 @@ class RequestBody(BaseModel):
     class Config:
         extra = "allow"
 
-# ---------------- Scam Detection (INTERNAL ONLY) ----------------
+
+# Simple GUVI tester model (fallback / webhook-style)
+class GuviRequest(BaseModel):
+    message: str
+
+    class Config:
+        extra = "allow"
+
+# ======================================================
+# SCAM DETECTION
+# ======================================================
 def is_scam(text: str) -> bool:
     keywords = ["blocked", "verify", "urgent", "upi", "click", "suspended"]
     return any(k in text.lower() for k in keywords)
 
-# ---------------- Intelligence Extraction ----------------
-def extract_intelligence(text: str, session):
+# ======================================================
+# INTELLIGENCE EXTRACTION
+# ======================================================
+def extract_intelligence(text: str, session: dict):
     session["extracted"]["phoneNumbers"].extend(
         re.findall(r'\+?\d{10,13}', text)
     )
@@ -58,11 +79,12 @@ def extract_intelligence(text: str, session):
         if k in text.lower():
             session["extracted"]["suspiciousKeywords"].append(k)
 
-# ---------------- Human-like Agent Reply ----------------
-def generate_agent_reply(text: str, session):
+# ======================================================
+# HUMAN-LIKE AGENT RESPONSE
+# ======================================================
+def generate_agent_reply(text: str, session: dict) -> str:
     text_lower = text.lower()
     messages = session["messages"]
-    full_context = " ".join(messages).lower()
 
     fillers = ["umm", "uh", "hmm", "wait", "sorry", "okay"]
     filler = random.choice(fillers)
@@ -71,7 +93,7 @@ def generate_agent_reply(text: str, session):
         return f"{filler} I actually have two UPI IDs. Which one should I use?"
 
     if "http" in text_lower or "click" in text_lower:
-        return f"{filler} this link isn’t opening properly on my phone. Is there another way?"
+        return f"{filler} this link isn’t opening properly. Is there another way?"
 
     if "blocked" in text_lower or "suspended" in text_lower:
         return "This is really sudden… my account was working fine today. Why is it blocked?"
@@ -88,7 +110,9 @@ def generate_agent_reply(text: str, session):
         "I don’t usually handle these things. Can you guide me step by step?"
     ])
 
-# ---------------- Final Callback ----------------
+# ======================================================
+# FINAL CALLBACK TO GUVI
+# ======================================================
 def send_final_callback(session_id: str):
     session = sessions.get(session_id)
     if not session:
@@ -103,25 +127,26 @@ def send_final_callback(session_id: str):
     }
 
     try:
-        requests.post(
-            "https://hackathon.guvi.in/api/updateHoneyPotFinalResult",
-            json=payload,
-            timeout=5
-        )
-    except:
+        requests.post(FINAL_CALLBACK_URL, json=payload, timeout=5)
+    except Exception:
         pass
 
-# ---------------- API ----------------
-@app.get("/")
-def home():
-    return {"message": "Agentic HoneyPot API is running"}
+# ======================================================
+# ROUTES
+# ======================================================
 
+@app.get("/")
+def health():
+    return {"status": "Agentic HoneyPot API running"}
+
+# ------------------------------------------------------
+# MAIN GUVI HONEYPOT ENDPOINT
+# ------------------------------------------------------
 @app.post("/v1/message")
 def receive_message(
     body: RequestBody,
     x_api_key: Optional[str] = Header(None)
 ):
-    # ✅ Optional API key (GUVI-safe)
     if x_api_key is not None and x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
@@ -141,15 +166,16 @@ def receive_message(
             "callbackSent": False
         }
 
-    sessions[session_id]["messages"].append(text)
-    extract_intelligence(text, sessions[session_id])
+    session = sessions[session_id]
+    session["messages"].append(text)
 
+    extract_intelligence(text, session)
     scam = is_scam(text)
-    reply = generate_agent_reply(text, sessions[session_id])
+    reply = generate_agent_reply(text, session)
 
-    if scam and len(sessions[session_id]["messages"]) >= 2 and not sessions[session_id]["callbackSent"]:
+    if scam and len(session["messages"]) >= 2 and not session["callbackSent"]:
         send_final_callback(session_id)
-        sessions[session_id]["callbackSent"] = True
+        session["callbackSent"] = True
 
     if not scam:
         return {
@@ -163,6 +189,25 @@ def receive_message(
         "reply": reply
     }
 
+# ------------------------------------------------------
+# SIMPLE GUVI TESTER WEBHOOK (NO 422 GUARANTEED)
+# ------------------------------------------------------
+@app.post("/webhook")
+async def webhook(
+    data: GuviRequest,
+    x_api_key: Optional[str] = Header(None)
+):
+    if x_api_key is not None and x_api_key != API_KEY:
+        return {"status": "error", "reason": "Invalid API key"}
+
+    return {
+        "status": "success",
+        "received_message": data.message
+    }
+
+# ------------------------------------------------------
+# DEBUG ENDPOINT
+# ------------------------------------------------------
 @app.get("/debug/session/{session_id}")
 def debug_session(session_id: str):
     return sessions.get(session_id, {})
